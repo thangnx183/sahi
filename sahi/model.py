@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from sahi.prediction import ObjectPrediction
+#from sahi.sahi import prediction
 from sahi.utils.compatibility import fix_full_shape_list, fix_shift_amount_list
 from sahi.utils.cv import get_bbox_from_bool_mask
 from sahi.utils.torch import cuda_is_available, empty_cuda_cache
@@ -69,6 +70,7 @@ class DetectionModel:
         # automatically load model if load_at_init is True
         if load_at_init:
             self.load_model()
+        print('debug cate : ',self.category_mapping)
 
     def load_model(self):
         """
@@ -404,6 +406,8 @@ class Yolov5DetectionModel(DetectionModel):
             prediction_result = self.model(image, size=self.image_size)
         else:
             prediction_result = self.model(image)
+        
+        print("debug pred resilt : ",prediction_result)
 
         self._original_predictions = prediction_result
 
@@ -442,6 +446,7 @@ class Yolov5DetectionModel(DetectionModel):
                 Size of the full image after shifting, should be in the form of
                 List[[height, width],[height, width],...]
         """
+        print('yoooo')
         original_predictions = self._original_predictions
 
         # compatilibty for sahi v0.8.15
@@ -451,12 +456,16 @@ class Yolov5DetectionModel(DetectionModel):
         # handle all predictions
         object_prediction_list_per_image = []
         for image_ind, image_predictions_in_xyxy_format in enumerate(original_predictions.xyxy):
+            
             shift_amount = shift_amount_list[image_ind]
             full_shape = None if full_shape_list is None else full_shape_list[image_ind]
             object_prediction_list = []
 
+            print('debug : ',image_ind,shift_amount)
+
             # process predictions
             for prediction in image_predictions_in_xyxy_format.cpu().detach().numpy():
+                print(prediction)
                 x1 = int(prediction[0])
                 y1 = int(prediction[1])
                 x2 = int(prediction[2])
@@ -670,4 +679,166 @@ class Detectron2DetectionModel(DetectionModel):
         # detectron2 DefaultPredictor supports single image
         object_prediction_list_per_image = [object_prediction_list]
 
+        self._object_prediction_list_per_image = object_prediction_list_per_image
+
+class ScaleYoloV4Model(DetectionModel):
+    def load_model(self):
+        """
+        Detection model is initialized and set to self.model.
+        """
+        # try:
+        #     import mmdet
+        # except ImportError:
+        #     raise ImportError(
+        #         'Please run "pip install -U mmcv mmdet" ' "to install MMDetection first for MMDetection inference."
+        #     )
+
+        #from mmdet.apis import init_detector
+        import sys
+        sys.path.append('../../')
+        from inference import Scale_yolo_model
+
+        # create model
+        model = Scale_yolo_model(self.model_path,0.5,self.image_size)
+
+        # update model image size
+        #if self.image_size is not None:
+        #    model.cfg.data.test.pipeline[1]["img_scale"] = (self.image_size, self.image_size)
+
+        # set self.model
+        self.model = model
+
+        # set category_mapping
+        if not self.category_mapping:
+            category_mapping = {str(ind): category_name for ind, category_name in enumerate(self.model.model.names)}
+            self.category_mapping = category_mapping
+
+    def perform_inference(self, image: np.ndarray, image_size: int = None):
+        """
+        Prediction is performed using self.model and the prediction result is set to self._original_predictions.
+        Args:
+            image: np.ndarray
+                A numpy array that contains the image to be predicted. 3 channel image should be in RGB order.
+            image_size: int
+                Inference input size.
+        """
+        # try:
+        #     import mmdet
+        # except ImportError:
+        #     raise ImportError(
+        #         'Please run "pip install -U mmcv mmdet" ' "to install MMDetection first for MMDetection inference."
+        #     )
+
+        # Confirm model is loaded
+        assert self.model is not None, "Model is not loaded, load it by calling .load_model()"
+
+        # Supports only batch of 1
+        #from mmdet.apis import inference_detector
+
+        # update model image size
+        if image_size is not None:
+            #warnings.warn("Set 'image_size' at DetectionModel init.", DeprecationWarning)
+            #self.model.cfg.data.test.pipeline[1]["img_scale"] = (image_size, image_size)
+            self.model.change_image_size(image_size)
+        
+
+        if max(image.shape) < self.model.imgsz : 
+            self.model.change_image_size(max(image.shape))
+
+        # # perform inference
+        # if isinstance(image, np.ndarray):
+        #     # https://github.com/obss/sahi/issues/265
+        #     image = image[:, :, ::-1]
+        # # compatibility with sahi v0.8.15
+        # if not isinstance(image, list):
+        #     image = [image]
+        prediction_result = self.model.inference_ndarray(image)
+
+        self._original_predictions = prediction_result
+
+    @property
+    def num_categories(self):
+        """
+        Returns number of categories
+        """
+        
+        return len(self.model.model.names)
+
+    @property
+    def has_mask(self):
+        """
+        Returns if model output contains segmentation mask
+        """
+        has_mask = False
+        return has_mask
+
+    @property
+    def category_names(self):
+        # if type(self.model.CLASSES) == str:
+        #     # https://github.com/open-mmlab/mmdetection/pull/4973
+        #     return (self.model.CLASSES,)
+        # else:
+        return self.model.model.names
+
+    def _create_object_prediction_list_from_original_predictions(
+        self,
+        shift_amount_list: Optional[List[List[int]]] = [[0, 0]],
+        full_shape_list: Optional[List[List[int]]] = None,
+    ):
+        """
+        self._original_predictions is converted to a list of prediction.ObjectPrediction and set to
+        self._object_prediction_list_per_image.
+        Args:
+            shift_amount_list: list of list
+                To shift the box and mask predictions from sliced image to full sized image, should
+                be in the form of List[[shift_x, shift_y],[shift_x, shift_y],...]
+            full_shape_list: list of list
+                Size of the full image after shifting, should be in the form of
+                List[[height, width],[height, width],...]
+        """
+        original_predictions = self._original_predictions
+        #category_mapping = self.category_mapping
+
+        # compatilibty for sahi v0.8.15
+        shift_amount_list = fix_shift_amount_list(shift_amount_list)
+        full_shape_list = fix_full_shape_list(full_shape_list)
+
+        # parse boxes and masks from predictions
+        #num_categories = self.num_categories
+
+        object_prediction_list_per_image = []
+        for image_ind, original_prediction in enumerate(original_predictions):
+            shift_amount = shift_amount_list[image_ind]
+            full_shape = None if full_shape_list is None else full_shape_list[image_ind]
+
+            prediction = original_prediction
+
+            object_prediction_list = []
+
+            boxes = prediction[0]
+            scores = prediction[1]
+            labels = prediction[2]
+            # process predictions
+            for i in range(len(boxes)):
+                box = boxes[i]
+                score = scores[i]
+
+                if score < self.confidence_threshold:
+                    continue
+
+                category_id = int(labels[i])
+                category_name = self.category_mapping[str(category_id)]
+
+                object_prediction = ObjectPrediction(
+                    bbox=box,
+                    category_id=category_id,
+                    score=score,
+                    bool_mask=None,
+                    category_name=category_name,
+                    shift_amount=shift_amount,
+                    full_shape=full_shape,
+                )
+                
+                object_prediction_list.append(object_prediction)
+            object_prediction_list_per_image.append(object_prediction_list)
         self._object_prediction_list_per_image = object_prediction_list_per_image
