@@ -407,8 +407,6 @@ class Yolov5DetectionModel(DetectionModel):
         else:
             prediction_result = self.model(image)
         
-        print("debug pred resilt : ",prediction_result)
-
         self._original_predictions = prediction_result
 
     @property
@@ -446,7 +444,6 @@ class Yolov5DetectionModel(DetectionModel):
                 Size of the full image after shifting, should be in the form of
                 List[[height, width],[height, width],...]
         """
-        print('yoooo')
         original_predictions = self._original_predictions
 
         # compatilibty for sahi v0.8.15
@@ -461,11 +458,8 @@ class Yolov5DetectionModel(DetectionModel):
             full_shape = None if full_shape_list is None else full_shape_list[image_ind]
             object_prediction_list = []
 
-            print('debug : ',image_ind,shift_amount)
-
             # process predictions
             for prediction in image_predictions_in_xyxy_format.cpu().detach().numpy():
-                print(prediction)
                 x1 = int(prediction[0])
                 y1 = int(prediction[1])
                 x2 = int(prediction[2])
@@ -699,7 +693,7 @@ class ScaleYoloV4Model(DetectionModel):
         from inference import Scale_yolo_model
 
         # create model
-        model = Scale_yolo_model(self.model_path,0.5,self.image_size)
+        model = Scale_yolo_model(self.model_path,iou_thres=0.2,imgsz=896)
 
         # update model image size
         #if self.image_size is not None:
@@ -734,16 +728,17 @@ class ScaleYoloV4Model(DetectionModel):
 
         # Supports only batch of 1
         #from mmdet.apis import inference_detector
+        origin_imgsz = self.model.imgsz
 
         # update model image size
-        if image_size is not None:
-            #warnings.warn("Set 'image_size' at DetectionModel init.", DeprecationWarning)
-            #self.model.cfg.data.test.pipeline[1]["img_scale"] = (image_size, image_size)
-            self.model.change_image_size(image_size)
+        # if image_size is not None:
+        #     #warnings.warn("Set 'image_size' at DetectionModel init.", DeprecationWarning)
+        #     #self.model.cfg.data.test.pipeline[1]["img_scale"] = (image_size, image_size)
+        #     self.model.change_image_size(image_size)
         
 
-        if max(image.shape) < self.model.imgsz : 
-            self.model.change_image_size(max(image.shape))
+        # if max(image.shape) < self.model.imgsz : 
+        #     self.model.change_image_size(max(image.shape))
 
         # # perform inference
         # if isinstance(image, np.ndarray):
@@ -753,6 +748,9 @@ class ScaleYoloV4Model(DetectionModel):
         # if not isinstance(image, list):
         #     image = [image]
         prediction_result = self.model.inference_ndarray(image)
+
+        if self.model.imgsz != origin_imgsz:
+            self.model.change_image_size(origin_imgsz)
 
         self._original_predictions = prediction_result
 
